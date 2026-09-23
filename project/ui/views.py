@@ -41,8 +41,8 @@ def render_result(result):
                     "Выдача не дополняется неподходящими профилями; причины отсева приведены ниже.")
         for card in recommendations:
             with st.container(border=True):
-                st.markdown(f"### {card['name']}")
-                st.write(f"{card['category']} · {card['city']}")
+                st.markdown(f"### {card['anon_name']}")
+                st.write(f"{', '.join(card['categories'])} · {card['city']}")
                 st.markdown(f"**От {card['price_from_kzt']:,.0f} ₸** · **Score: {card['score']:.4f}/1**")
                 badges = []
                 for flag, label in [("synthetic", "synthetic: синтетический"), ("city_imputed", "imputed: город"), ("price_imputed", "imputed: цена")]:
