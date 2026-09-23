@@ -1,7 +1,7 @@
 """Readable jury demo built with native Streamlit components."""
 from datetime import date
 import streamlit as st
-from ui.mock_data import PRESETS
+from ui.presets import PRESETS
 from ui.service import get_recommendations
 
 
@@ -13,46 +13,71 @@ def apply_preset(index):
 
 def render_result(result):
     q = result["request"]
+    recommendations = result["recommendations"]
+    diagnostics = result["diagnostics"]
     st.subheader(q["date"])
     st.caption(f"{q['city']} · {q['event_type']} · {q['category']} · {q['budget']:,} ₸ · "
                f"{str(q['duration']) + ' ч' if q['duration'] else 'длительность не задана'} · {q['language'] or 'любой язык'}")
-    st.caption(f"Источник: {result['source']}")
     st.markdown("**Воронка отбора**")
-    maximum = max(result["funnel"][0]["count"], 1)
-    for index, step in enumerate(result["funnel"]):
-        st.progress(step["count"] / maximum, text=f"{'↓ ' if index else ''}{step['label']}: {step['count']}")
+    # Core counts the first failed filter; subtraction only formats its diagnostics.
+    free = diagnostics["candidates"] - diagnostics["busy"]
+    format_ok = free - diagnostics["format"]
+    budget_ok = format_ok - diagnostics["budget"]
+    funnel = [
+        ("Кандидаты", diagnostics["candidates"]),
+        ("Свободны на дату", free),
+        ("Подходят по формату", format_ok),
+        ("Проходят бюджет", budget_ok),
+        ("Проходят язык/длительность", diagnostics["remaining"]),
+        ("Рекомендованы", len(recommendations)),
+    ]
+    maximum = max(diagnostics["candidates"], 1)
+    for index, (label, count) in enumerate(funnel):
+        st.progress(count / maximum, text=f"{'↓ ' if index else ''}{label}: {count}")
     if result["status"] == "matched":
-        st.success(f"matched — подобрано: {len(result['cards'])}")
-        if len(result["cards"]) < 3:
-            st.info(f"Только {len(result['cards'])} из {result['funnel'][0]['count']} кандидатов проходят все условия. "
+        st.success(f"matched — подобрано: {len(recommendations)}")
+        if len(recommendations) < 3:
+            st.info(f"Только {diagnostics['remaining']} из {diagnostics['candidates']} кандидатов проходят все условия. "
                     "Выдача не дополняется неподходящими профилями; причины отсева приведены ниже.")
-        for card in result["cards"]:
+        for card in recommendations:
             with st.container(border=True):
                 st.markdown(f"### {card['name']}")
-                st.write(f"{', '.join(card['categories'])} · {card['city']}")
-                st.markdown(f"**От {card['price']:,} ₸** · **Score: {card['score']:.2f}/100**")
+                st.write(f"{card['category']} · {card['city']}")
+                st.markdown(f"**От {card['price_from_kzt']:,.0f} ₸** · **Score: {card['score']:.4f}/1**")
                 badges = []
                 for flag, label in [("synthetic", "synthetic: синтетический"), ("city_imputed", "imputed: город"), ("price_imputed", "imputed: цена")]:
-                    if card[flag]:
+                    # Optional CSV flags may arrive as strings, including 'false'.
+                    if str(card.get(flag, False)).strip().casefold() in {"true", "1", "yes"}:
                         badges.append(f":orange-badge[{label}]")
                 if badges:
                     st.markdown(" ".join(badges))
                 st.write(card["explanation"])
                 with st.expander("Evidence — факты для объяснения"):
-                    st.json(card["evidence"])
+                    st.json({key: value for key, value in card.items() if key != "explanation"})
     elif result["status"] == "category_absent":
         st.info(f"category_absent — в городе {q['city']} нет категории «{q['category']}» в текущем каталоге.")
-        st.write("Попробуйте другой город или категорию. Для mock это означает отсутствие только во временных данных.")
+        st.write("Попробуйте другой город или категорию.")
     elif result["status"] == "no_eligible":
         st.warning("no_eligible — кандидаты есть, но ни один не проходит все условия.")
-    if result["diagnostics"]:
-        st.markdown("**Diagnostics — причины отсева**")
-        st.caption("Каждый профиль учитывается один раз, на первом не пройденном этапе.")
-        for item in result["diagnostics"]:
-            st.write(f"• {item['reason']}: {item['count']} — {', '.join(item['names'])}")
-    if result["suggestions"]:
+    reasons = [
+        ("busy", "Заняты на выбранную дату", "Попробуйте другую дату."),
+        ("format", "Не работают с этим форматом", "Проверьте формат мероприятия."),
+        ("budget", "Цена выше бюджета", "Рассмотрите увеличение бюджета."),
+        ("language", "Не подходит язык", "Проверьте требуемый язык."),
+        ("duration", "Превышена максимальная длительность", "Рассмотрите меньшую длительность, если это допустимо."),
+    ]
+    st.markdown("**Diagnostics — причины отсева**")
+    st.caption("Каждый профиль учитывается один раз, на первом не пройденном этапе.")
+    rejected = [(label, diagnostics[key], suggestion) for key, label, suggestion in reasons if diagnostics[key]]
+    for label, count, _ in rejected:
+        st.write(f"• {label}: {count}")
+    if not rejected:
+        st.caption("Отсев по условиям не зафиксирован.")
+    with st.expander("Исходные diagnostics core"):
+        st.json(diagnostics)
+    if rejected:
         st.markdown("**Suggestions — что можно изменить**")
-        for suggestion in result["suggestions"]:
+        for _, _, suggestion in rejected:
             st.write(f"• {suggestion}")
 
 
@@ -60,8 +85,10 @@ def main():
     st.set_page_config(page_title="HackAlem AI", page_icon="🔎", layout="wide")
     st.title("HackAlem AI")
     st.write("Подбор до трёх подрядчиков с понятными причинами рекомендации.")
-    st.warning("Демо на mock-данных. Все профили вымышлены; backend/core пока не подключён.")
-    st.caption("Score в mock — доля свободного бюджета, а не оценка качества. Цена «от» требует уточнения.")
+    st.caption("Порядок, score и объяснения рассчитаны recommendation engine. Цена «от» требует уточнения.")
+    # Discard results retained by Streamlit from an older mock UI session.
+    if "results" in st.session_state and any("recommendations" not in r for r in st.session_state.results):
+        st.session_state.pop("results", None)
     if "city" not in st.session_state:
         apply_preset(0)
     st.markdown("**Demo presets** — выберите сценарий, затем нажмите «Подобрать».")
@@ -75,7 +102,7 @@ def main():
             st.selectbox("Тип мероприятия", ["корпоратив", "свадьба", "той", "конференция", "юбилей", "день рождения"], key="event_type")
             st.selectbox("Категория подрядчика", ["Ведущий", "Флорист", "Декоратор", "Фотограф", "Банкетный зал", "Подарки и сувениры", "Ведущий церемонии", "Фото и видеобудки", "Отель", "Инструменталист"], key="category")
         with right:
-            st.number_input("Бюджет, ₸", min_value=1, step=50000, key="budget")
+            st.number_input("Бюджет, ₸", min_value=0, step=50000, key="budget")
             st.number_input("Длительность, часов (опционально)", min_value=1, max_value=168, value=None, key="duration", placeholder="Не задана")
             st.selectbox("Язык (опционально)", ["Не важно", "русский", "казахский", "английский"], key="language")
             st.checkbox("Сравнить 2026-09-30 и 2026-10-29", key="compare")
@@ -90,6 +117,10 @@ def main():
         try:
             with st.spinner("Подбираем подрядчиков…"):
                 st.session_state.results = [get_recommendations({**request, "date": d}) for d in dates]
+        except FileNotFoundError:
+            st.error("Каталог подрядчиков не найден. Core ожидает data/contractors.csv; передайте файл каталога участнику, отвечающему за данные.")
+        except ValueError as error:
+            st.error(f"Core не смог обработать параметры или каталог: {error}")
         except Exception:
             st.error("Не удалось получить рекомендации. Попробуйте повторить запрос или проверьте подключение backend.")
     if "results" not in st.session_state:
@@ -99,7 +130,7 @@ def main():
     st.divider()
     st.caption("Результаты последнего отправленного запроса; после изменения формы нажмите «Подобрать».")
     if len(results) == 2:
-        st.info("Меняется только дата. Различия в выдаче связаны с календарём занятости; имена отсеянных видны в diagnostics.")
+        st.info("Меняется только дата. Выполнены два независимых запроса к core; diagnostics показывают число занятых кандидатов для каждой даты.")
         for column, result in zip(st.columns(2), results):
             with column:
                 render_result(result)

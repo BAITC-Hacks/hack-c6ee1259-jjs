@@ -1,10 +1,7 @@
-"""Single integration point for the future core service."""
-from ui.mock_data import recommend as mock_recommend
+"""Call the core without filtering, sorting or changing its recommendations."""
+from src import recommender
 
 
 def get_recommendations(request):
-    """Replace this call with src.recommender.recommend; normalize to README contract.
-
-    Do not silently fall back to mock when the real backend fails.
-    """
-    return mock_recommend(request)
+    """Keep submitted form values alongside the unmodified core response."""
+    return {**recommender.recommend(dict(request)), "request": dict(request)}
