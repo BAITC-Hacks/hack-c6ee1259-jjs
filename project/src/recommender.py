@@ -19,6 +19,8 @@ from datetime import date
 from pathlib import Path
 
 DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "contractors.csv"
+DATASET_START = date(2026, 9, 23)
+DATASET_END = date(2026, 12, 31)
 REQUIRED_COLUMNS = {
     "id", "anon_name", "city", "categories", "busy_dates", "event_formats",
     "price_from_kzt", "languages", "max_hours", "description",
@@ -147,6 +149,8 @@ def recommend(request):
             raise ValueError(f"{key} is required")
         request[key] = request[key].strip()
     request["date"] = _iso_date(request.get("date"))
+    if not DATASET_START.isoformat() <= request["date"] <= DATASET_END.isoformat():
+        raise ValueError("Выберите дату с 2026-09-23 по 2026-12-31: за пределами этого периода доступность неизвестна.")
     request["budget"] = _number(request.get("budget"), "budget")
     if request.get("duration") is not None:
         request["duration"] = _number(request["duration"], "duration", positive=True)
