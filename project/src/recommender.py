@@ -2,9 +2,10 @@
 
 Request: city, category, date (ISO YYYY-MM-DD), event_type, budget;
 optional language, duration (hours), description (free text).
-CSV: id, name, city, category, busy_dates, event_type, price_from_kzt,
-languages, max_hours, description. Lists use JSON arrays or semicolons.
-The real dataset is currently absent; this schema follows the task fields.
+CSV: id, anon_name, categories, city, price_from_kzt, event_formats,
+languages, max_hours, busy_dates, description. Lists use pipes; JSON arrays
+and semicolons remain supported. Extra columns (including synthetic,
+city_imputed and price_imputed) are preserved as CSV strings.
 Diagnostics count the FIRST failed filter, in the order listed below.
 category_absent means absent in the requested city; remaining is before top 3.
 """
@@ -19,7 +20,7 @@ from pathlib import Path
 
 DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "contractors.csv"
 REQUIRED_COLUMNS = {
-    "id", "name", "city", "category", "busy_dates", "event_type",
+    "id", "anon_name", "city", "categories", "busy_dates", "event_formats",
     "price_from_kzt", "languages", "max_hours", "description",
 }
 
@@ -49,7 +50,7 @@ def _items(value):
     value = value.strip()
     if not value:
         return []
-    items = json.loads(value) if value.startswith("[") else value.split(";")
+    items = json.loads(value) if value.startswith("[") else re.split(r"[|;]", value)
     if not isinstance(items, list) or any(not isinstance(item, str) for item in items):
         raise ValueError("List columns must contain strings")
     return [item.strip() for item in items if item.strip()]
@@ -76,7 +77,8 @@ def _load_contractors():
                 else _number(row["max_hours"], "max_hours")
             )
             row["busy_dates"] = [_iso_date(item) for item in _items(row["busy_dates"])]
-            row["event_type"] = _items(row["event_type"])
+            row["categories"] = _items(row["categories"])
+            row["event_formats"] = _items(row["event_formats"])
             row["languages"] = _items(row["languages"])
             rows.append(row)
     return sorted(rows, key=lambda row: row["id"])
@@ -108,7 +110,7 @@ def _explanation(row, request, query):
     facts = [
         f"Свободен на {request['date']}: дата отсутствует в списке занятости.",
         f"Цена от {price:g} KZT при бюджете {budget:g} KZT; запас {budget - price:g} KZT.",
-        f"Поддерживает формат «{request['event_type']}» (в данных: {', '.join(row['event_type'])}).",
+        f"Поддерживает формат «{request['event_type']}» (в данных: {', '.join(row['event_formats'])}).",
     ]
     language = request.get("language")
     facts.append(f"Язык «{language}» поддерживается." if language else
@@ -156,14 +158,14 @@ def recommend(request):
         raise ValueError("description must be a string")
     candidates = [row for row in _load_contractors()
                   if _norm(row["city"]) == _norm(request["city"])
-                  and _norm(row["category"]) == _norm(request["category"])]
+                  and _norm(request["category"]) in {_norm(item) for item in row["categories"]}]
     diagnostics = dict.fromkeys(("candidates", "busy", "format", "budget", "language", "duration", "remaining"), 0)
     diagnostics["candidates"] = len(candidates)
     eligible = []
     for row in candidates:
         checks = (
             ("busy", request["date"] in row["busy_dates"]),
-            ("format", _norm(request["event_type"]) not in {_norm(item) for item in row["event_type"]}),
+            ("format", _norm(request["event_type"]) not in {_norm(item) for item in row["event_formats"]}),
             ("budget", row["price_from_kzt"] > request["budget"]),
             ("language", bool(request.get("language")) and _norm(request["language"]) not in {_norm(item) for item in row["languages"]}),
             ("duration", request.get("duration") is not None and row["max_hours"] is not None
@@ -181,7 +183,7 @@ def recommend(request):
     recommendations = []
     for row, similarity in zip(eligible, similarities):
         budget_fit = 1 - row["price_from_kzt"] / request["budget"] if request["budget"] else 1.0
-        format_relevance = 1 / len({_norm(item) for item in row["event_type"]})
+        format_relevance = 1 / len({_norm(item) for item in row["event_formats"]})
         score = 0.6 * similarity + 0.25 * budget_fit + 0.15 * format_relevance
         recommendations.append({**row, "score": score,
                                 "score_components": {"semantic_similarity": similarity,
